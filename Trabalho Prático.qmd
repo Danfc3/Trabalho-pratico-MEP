@@ -1,0 +1,21 @@
+---
+title: "Trabalho Pratico"
+format: html
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(forecast)
+library(ggplot2)
+```
+
+You can add options to executable code like this
+
+```{r}
+desviv <- read.csv("E:/Estudos/MEP/trabalho MEP/total_por_ano_e_mes.csv")
+
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
