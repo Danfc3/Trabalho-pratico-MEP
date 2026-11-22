@@ -9,13 +9,159 @@ library(tidyr)
 library(readxl)
 library(forecast)
 library(ggplot2)
+library(lubridate)
 ```
 
-You can add options to executable code like this
+
 
 ```{r}
-desviv <- read.csv("E:/Estudos/MEP/trabalho MEP/total_por_ano_e_mes.csv")
+desviv <- read.csv("https://github.com/Danfc3/Trabalho-pratico-MEP/raw/refs/heads/main/total_por_ano_e_mes.csv")
+names(desviv)[names(desviv) == "X"] <- "Mês"
+names(desviv)[names(desviv) == "index"] <- "Data"
+names(desviv)[names(desviv) == "n"] <- "Casos"
+desviv <- desviv %>%
+  mutate(
+    Data = as.Date(Data),
+    Ano = year(Data)
+  )
 
+ts_des <- ts(desviv$Casos, start = c(2010, 1), frequency = 12)
+autoplot(ts_des) +
+  labs(
+    x = "Tempo",
+    y = "Núm de casos"
+  ) +
+  theme_minimal()
+acf(ts_des)
+Acf(ts_des)
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+
+
+```{r}
+decomposicao <- decompose(ts_des)
+plot(decomposicao)
+```
+Modelo com tendência e sazonalidade 
+
+```{r}
+modelo_sazonal_referencia <- tslm(ts_des ~ trend + season)
+summary(modelo_sazonal_referencia)
+```
+
+Parametrização com restrição de soma zero
+```{r}
+sazonalidade <- factor(cycle(ts_des))
+contrasts(sazonalidade) <- contr.sum(12)
+modelo_sazonal_soma_zero <- tslm(
+  ts_des ~ trend + sazonalidade
+)
+
+summary(modelo_sazonal_soma_zero)
+checkresiduals(modelo_sazonal_soma_zero, test = 'LB')
+```
+verificando a equivalencia dos ajustes
+```{r}
+all.equal(
+  as.numeric(fitted(modelo_sazonal_referencia)),
+  as.numeric(fitted(modelo_sazonal_soma_zero))
+)
+
+```
+```{r}
+autoplot(ts_des, series = "Observado") +
+  autolayer(
+    fitted(modelo_sazonal_soma_zero),
+    series = "Tendencia + sazonalidade"
+  ) +
+  labs(
+    x = "Tempo",
+    y = "Núm. de Casos",
+    colour = "blue"
+  ) +
+  theme_minimal()
+```
+Testando modelo com tendencia ao quadrado e sazonalidade
+```{r}
+sazonalidade <- factor(cycle(ts_des))
+contrasts(sazonalidade) <- contr.sum(12)
+modelo_reg_quadratico <- tslm(ts_des ~ trend + I(trend^2) + sazonalidade)
+
+summary(modelo_reg_quadratico)
+checkresiduals(modelo_reg_quadratico, test = 'LB')
+```
+
+visualização do ajuste do modelo quadratico
+```{r}
+autoplot(ts_des, series = "Observado") +
+  autolayer(
+    fitted(modelo_reg_quadratico),
+    series = "Tendencia + sazonalidade"
+  ) +
+  labs(
+    x = "Tempo",
+    y = "Núm de Casos",
+    colour = ""
+  ) +
+  theme_minimal()
+```
+ Análise de previsões com regressão ####
+ Separando as ultimas 32 observacoes para avaliar as previsoes
+ 
+```{r}
+n_teste <- 18
+n <- length(ts_des)
+
+serie_treino <- window(
+  ts_des,
+  end = time(ts_des)[n - n_teste]
+)
+
+serie_teste <- window(
+  ts_des,
+  start = time(ts_des)[n - n_teste + 1]
+)
+
+autoplot(serie_treino, series = "Treino") +
+  autolayer(serie_teste, series = "Teste") +
+  labs(
+    x = "Tempo",
+    y = "Consumo Energia",
+    colour = ""
+  ) +
+  theme_minimal()
+```
+
+Ajuste com tendencia e sazonalidade/ sazonalidade quadratica
+```{r}
+modelo_reg_sazonal_treino <- tslm(serie_treino ~ trend + season)
+prev_sazonal <- forecast(modelo_reg_sazonal_treino, h = n_teste)
+
+modelo_reg_quadratico_treino <- tslm(
+  serie_treino ~ trend + I(trend^2) + season)
+prev_quadratico <- forecast(
+  modelo_reg_quadratico_treino,
+  h = n_teste
+)
+```
+
+comparação das previsoes
+```{r}
+autoplot(serie_treino, series = "Treino") +
+  autolayer(serie_teste, series = "Teste") +
+  autolayer(prev_sazonal$mean, series = "Tendencia + sazonalidade") +
+  autolayer(prev_quadratico$mean, series = "Tendencia quadratica + sazonalidade") +
+  labs(
+    x = "Tempo",
+    y = "Consumo Energia",
+    colour = ""
+  ) +
+  theme_minimal()
+```
+
+medidas na base de teste
+```{r}
+accuracy(prev_sazonal, serie_teste)
+accuracy(prev_quadratico, serie_teste)
+```
+
