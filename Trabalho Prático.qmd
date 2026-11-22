@@ -1,6 +1,10 @@
 ---
 title: "Trabalho Pratico"
-format: html
+author: 
+  - Daniel Fernandes da Cruz
+  - Joao Alexandre Meirelles Matencio
+  - Ronald Rodrigues Souza Nunes
+format: pdf
 ---
 
 ```{r}
