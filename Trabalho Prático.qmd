@@ -1,10 +1,13 @@
 ---
 title: "Trabalho Pratico"
-author: 
+author:
   - Daniel Fernandes da Cruz
   - Joao Alexandre Meirelles Matencio
   - Ronald Rodrigues Souza Nunes
 format: pdf
+execute:
+  warning: false
+  message: false
 ---
 
 ```{r}
@@ -14,40 +17,129 @@ library(readxl)
 library(forecast)
 library(ggplot2)
 library(lubridate)
+library(tseries)
 ```
 
+## Descrição dos dados
 
+A série analisada é o número mensal de casos de **[COMPLETAR: fonte dos dados e definição de caso]**, de janeiro de 2010 a dezembro de 2019, totalizando 120 observações. Usamos 10 anos de dados, mais do que os 3 a 5 anos recomendados para séries mensais, o que ajuda a estimar a tendência e a sazonalidade. O período termina em 2019 para não incluir a pandemia de COVID-19, que poderia mudar o comportamento da série a partir de 2020.
 
+A base tem uma linha por mês, com a data (`index`) e o número de casos (`n`). As colunas foram renomeadas para `Data` e `Casos`, e foram criadas as colunas `Ano` e `Mes`.
+
+leitura dos dados e criação da série mensal
 ```{r}
-desviv <- read.csv("https://github.com/Danfc3/Trabalho-pratico-MEP/raw/refs/heads/main/total_por_ano_e_mes.csv")
-names(desviv)[names(desviv) == "X"] <- "Mês"
+desviv <- read.csv("total_por_ano_e_mes.csv")
 names(desviv)[names(desviv) == "index"] <- "Data"
 names(desviv)[names(desviv) == "n"] <- "Casos"
 desviv <- desviv %>%
   mutate(
     Data = as.Date(Data),
-    Ano = year(Data)
+    Ano = year(Data),
+    Mes = month(Data)
   )
 
 ts_des <- ts(desviv$Casos, start = c(2010, 1), frequency = 12)
+```
+
+## Análise exploratória
+
+```{r}
 autoplot(ts_des) +
   labs(
     x = "Tempo",
     y = "Núm de casos"
   ) +
   theme_minimal()
-acf(ts_des)
-Acf(ts_des)
 ```
 
+A série cresce ao longo de todo o período, passando de cerca de 800 casos por mês em 2010 para mais de 1100 em 2019, e tem oscilações que se repetem dentro de cada ano.
 
+estatísticas descritivas
+```{r}
+summary(desviv$Casos)
+sd(desviv$Casos)
+```
 
+total, média e desvio padrão por ano
+```{r}
+desviv %>%
+  group_by(Ano) %>%
+  summarise(
+    Total = sum(Casos),
+    Media = mean(Casos),
+    DP = sd(Casos)
+  )
+```
+
+A média geral é de 937 casos por mês, com desvio padrão de 120, mínimo de 702 e máximo de 1225. O total anual aumenta em todos os anos, de 9.476 casos em 2010 para 13.554 em 2019, um aumento de cerca de 43%.
+
+média por mês
+```{r}
+desviv %>%
+  group_by(Mes) %>%
+  summarise(Media = mean(Casos))
+```
+
+Os meses com maior média são dezembro (1020), outubro (988) e março (968), e os de menor média são junho (858), julho (880) e fevereiro (890), que também tem menos dias.
+
+decomposição da série
 ```{r}
 decomposicao <- decompose(ts_des)
 plot(decomposicao)
 ```
-Modelo com tendência e sazonalidade 
 
+A decomposição mostra a tendência crescente, com crescimento mais forte a partir de 2016, e um componente sazonal com pico em dezembro (68 casos acima da tendência) e vale em junho (77 casos abaixo).
+
+autocorrelação e autocorrelação parcial
+```{r}
+acf(ts_des)
+Acf(ts_des)
+Pacf(ts_des)
+```
+
+A ACF decai lentamente e as autocorrelações ficam acima dos limites em todos os lags, efeito da tendência. Isso indica que a série não é estacionária.
+
+testes de estacionariedade
+```{r}
+tseries::adf.test(ts_des)
+tseries::kpss.test(ts_des)
+```
+
+Na série original os testes discordam. O ADF rejeita a hipótese de raiz unitária (p-valor < 0,01), mas o teste do pacote tseries inclui uma tendência linear, então indica no máximo estacionariedade em torno da tendência. O KPSS rejeita a hipótese de estacionariedade (p-valor < 0,01). Como a tendência é clara no gráfico e na ACF, aplicamos uma diferença.
+
+série com uma diferença
+```{r}
+ts_des_diff <- diff(ts_des, differences = 1)
+autoplot(ts_des_diff) +
+  labs(
+    x = "Tempo",
+    y = "Diferença do núm de casos"
+  ) +
+  theme_minimal()
+
+tseries::adf.test(ts_des_diff)
+tseries::kpss.test(ts_des_diff)
+
+Acf(ts_des_diff)
+Pacf(ts_des_diff)
+```
+
+Com uma diferença, o ADF continua rejeitando a raiz unitária (p-valor < 0,01) e o KPSS não rejeita a estacionariedade (p-valor > 0,1), então usamos d = 1 nos modelos ARIMA. Na ACF da série diferenciada o lag 1 é negativo e significativo (-0,49), o que sugere um termo MA(1), e aparecem picos nos lags 12 e 24, que indicam sazonalidade anual. A PACF tem vários lags negativos significativos, sem um corte claro, o que também é compatível com um termo de médias móveis.
+
+## Modelagem
+
+### Modelos de regressão
+
+Modelo apenas com tendência
+```{r}
+modelo_tendencia <- tslm(ts_des ~ trend)
+summary(modelo_tendencia)
+checkresiduals(modelo_tendencia, test = 'LB')
+```
+
+O modelo só com tendência tem R² ajustado de 0,76, mas os resíduos têm autocorrelação forte (Ljung-Box com p-valor < 0,001), porque a sazonalidade não está no modelo.
+
+Modelo com tendência e sazonalidade
 ```{r}
 modelo_sazonal_referencia <- tslm(ts_des ~ trend + season)
 summary(modelo_sazonal_referencia)
@@ -80,11 +172,15 @@ autoplot(ts_des, series = "Observado") +
   ) +
   labs(
     x = "Tempo",
-    y = "Núm. de Casos",
-    colour = "blue"
+    y = "Núm de casos",
+    colour = ""
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(legend.position = "bottom")
 ```
+
+Com a sazonalidade o R² ajustado sobe para 0,87. As duas parametrizações dão os mesmos valores ajustados (o `all.equal` retorna TRUE); na de soma zero cada coeficiente é o desvio do mês em relação à média, o que facilita a leitura. O Ljung-Box ainda rejeita a hipótese de resíduos não correlacionados (p-valor < 0,001).
+
 Testando modelo com tendencia ao quadrado e sazonalidade
 ```{r}
 sazonalidade <- factor(cycle(ts_des))
@@ -100,21 +196,26 @@ visualização do ajuste do modelo quadratico
 autoplot(ts_des, series = "Observado") +
   autolayer(
     fitted(modelo_reg_quadratico),
-    series = "Tendencia + sazonalidade"
+    series = "Tendencia quadratica + sazonalidade"
   ) +
   labs(
     x = "Tempo",
-    y = "Núm de Casos",
+    y = "Núm de casos",
     colour = ""
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(legend.position = "bottom")
 ```
- Análise de previsões com regressão ####
- Separando as ultimas 32 observacoes para avaliar as previsoes
- 
+
+O termo quadrático é significativo (p-valor < 0,001) e o R² ajustado chega a 0,89. Com ele os resíduos deixam de ter autocorrelação significativa (Ljung-Box com p-valor = 0,44).
+
+Análise de previsões com regressão
+
+Para avaliar as previsões, os dados foram separados em treino e teste. Como 20% de 120 meses dá 24 meses, acima do limite de 18 meses para dados mensais, o teste fica com os últimos 18 meses (julho de 2018 a dezembro de 2019) e o treino com os 102 primeiros (janeiro de 2010 a junho de 2018). A mesma divisão é usada em todos os modelos.
+
 ```{r}
-n_teste <- 18
 n <- length(ts_des)
+n_teste <- min(18, round(.2*n))
 
 serie_treino <- window(
   ts_des,
@@ -130,14 +231,18 @@ autoplot(serie_treino, series = "Treino") +
   autolayer(serie_teste, series = "Teste") +
   labs(
     x = "Tempo",
-    y = "Consumo Energia",
+    y = "Núm de casos",
     colour = ""
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(legend.position = "bottom")
 ```
 
-Ajuste com tendencia e sazonalidade/ sazonalidade quadratica
+Ajuste com tendencia, tendencia e sazonalidade e tendencia quadratica e sazonalidade
 ```{r}
+modelo_tendencia_treino <- tslm(serie_treino ~ trend)
+prev_tendencia <- forecast(modelo_tendencia_treino, h = n_teste)
+
 modelo_reg_sazonal_treino <- tslm(serie_treino ~ trend + season)
 prev_sazonal <- forecast(modelo_reg_sazonal_treino, h = n_teste)
 
@@ -153,19 +258,368 @@ comparação das previsoes
 ```{r}
 autoplot(serie_treino, series = "Treino") +
   autolayer(serie_teste, series = "Teste") +
+  autolayer(prev_tendencia$mean, series = "Tendencia") +
   autolayer(prev_sazonal$mean, series = "Tendencia + sazonalidade") +
   autolayer(prev_quadratico$mean, series = "Tendencia quadratica + sazonalidade") +
+  guides(colour = guide_legend(nrow = 2)) +
   labs(
     x = "Tempo",
-    y = "Consumo Energia",
+    y = "Núm de casos",
     colour = ""
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(legend.position = "bottom")
 ```
 
 medidas na base de teste
 ```{r}
+accuracy(prev_tendencia, serie_teste)
 accuracy(prev_sazonal, serie_teste)
 accuracy(prev_quadratico, serie_teste)
 ```
 
+Na base de teste o modelo quadrático tem os menores erros em todas as medidas (RMSE = 34,82, MAE = 29,32 e MAPE = 2,61%), contra MAPE de 4,71% do modelo só com tendência e 3,87% do modelo com tendência linear e sazonalidade. Os modelos com tendência linear subestimam os valores do teste (erro médio, ME, de 46 e 43 casos por mês), porque não acompanham o crescimento mais forte dos últimos anos, enquanto o modelo quadrático fica praticamente sem viés (ME = -1,87).
+
+O melhor modelo de regressão é o de tendência quadrática e sazonalidade: tem o maior R² ajustado, resíduos sem autocorrelação e os menores erros de previsão.
+
+### Modelos de suavização exponencial
+
+Suavização exponencial simples: ETS(A,N,N)
+```{r}
+modelo_ANN <- ets(ts_des, model = "ANN", damped = FALSE)
+summary(modelo_ANN)
+checkresiduals(modelo_ANN)
+```
+
+Método de Holt: ETS(A,A,N)
+```{r}
+modelo_AAN <- ets(ts_des, model = "AAN", damped = FALSE)
+summary(modelo_AAN)
+checkresiduals(modelo_AAN)
+```
+
+A suavização simples só acompanha o nível da série e o método de Holt acrescenta a tendência, mas nenhum dos dois captura a sazonalidade, e os resíduos continuam autocorrelacionados (Ljung-Box com p-valor < 0,001).
+
+Método de Holt-Winters: ETS(A,A,A)
+```{r}
+modelo_AAA <- ets(ts_des, model = "AAA", damped = FALSE)
+summary(modelo_AAA)
+modelo_AAA$par
+```
+
+visualização do ajuste do Holt-Winters
+```{r}
+autoplot(ts_des, series = "Observado") +
+  autolayer(
+    fitted(modelo_AAA),
+    series = "Holt-Winters"
+  ) +
+  labs(
+    x = "Tempo",
+    y = "Núm de casos",
+    colour = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+checkresiduals(modelo_AAA)
+```
+
+comparação dos modelos de suavização pelo AICc
+```{r}
+modelo_ANN$aicc
+modelo_AAN$aicc
+modelo_AAA$aicc
+```
+
+O Holt-Winters tem o menor AICc (1487,9, contra 1563,8 da suavização simples e 1559,1 do Holt). O alpha estimado foi 0,15 e o beta e o gamma ficaram praticamente zero: o nível é atualizado aos poucos, enquanto a tendência e a sazonalidade ficam quase fixas ao longo do tempo. Os resíduos não têm autocorrelação significativa (Ljung-Box com p-valor = 0,62).
+
+Análise de previsões com suavização exponencial
+```{r}
+modelo_ANN_treino <- ets(
+  serie_treino,
+  model = "ANN",
+  damped = FALSE
+)
+
+modelo_AAN_treino <- ets(
+  serie_treino,
+  model = "AAN",
+  damped = FALSE
+)
+
+modelo_AAA_treino <- ets(
+  serie_treino,
+  model = "AAA",
+  damped = FALSE
+)
+
+prev_ANN <- forecast(modelo_ANN_treino, h = n_teste)
+prev_AAN <- forecast(modelo_AAN_treino, h = n_teste)
+prev_AAA <- forecast(modelo_AAA_treino, h = n_teste)
+```
+
+comparação das previsoes
+```{r}
+autoplot(serie_treino, series = "Treino") +
+  autolayer(serie_teste, series = "Teste") +
+  autolayer(prev_ANN$mean, series = "Suavizacao simples") +
+  autolayer(prev_AAN$mean, series = "Holt") +
+  autolayer(prev_AAA$mean, series = "Holt-Winters") +
+  labs(
+    x = "Tempo",
+    y = "Núm de casos",
+    colour = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+medidas na base de teste
+```{r}
+accuracy(prev_ANN, serie_teste)
+accuracy(prev_AAN, serie_teste)
+accuracy(prev_AAA, serie_teste)
+```
+
+O Holt-Winters tem os menores erros no teste (MAPE de 2,84%), bem abaixo da suavização simples (6,74%) e do Holt (4,00%). A suavização simples projeta um valor constante e o Holt uma reta, então nenhum dos dois acompanha a sazonalidade. O melhor modelo de suavização é o Holt-Winters.
+
+### Modelos ARIMA
+
+Pela ACF e PACF da série diferenciada, testando primeiro um MA(1) e um AR(1) na diferença
+```{r}
+modelo1 <- Arima(ts_des, order = c(0,1,1)) ##ARIMA(0,1,1)
+summary(modelo1)
+
+modelo2 <- Arima(ts_des, order = c(1,1,0)) ##ARIMA(1,1,0)
+summary(modelo2)
+
+checkresiduals(modelo1)
+checkresiduals(modelo2)
+```
+
+auto.arima sem sazonalidade, com d = 1
+```{r}
+modelo_auto <- auto.arima(ts_des,
+                          d=1,
+                          max.p=3,
+                          max.q=3,
+                          seasonal=F,
+                          allowdrift=F)
+
+summary(modelo_auto)
+```
+
+O ARIMA(0,1,1) tem AICc menor que o ARIMA(1,1,0) (1318,3 contra 1323,5) e o auto.arima sem sazonalidade escolhe o mesmo ARIMA(0,1,1). Mesmo assim os dois modelos deixam autocorrelação nos resíduos (Ljung-Box com p-valor < 0,001), porque não têm a parte sazonal.
+
+incluindo a parte sazonal
+```{r}
+modelo_auto_saz <- auto.arima(ts_des,
+                              d=1,
+                              max.p=3,
+                              max.q=3,
+                              allowdrift=F)
+
+summary(modelo_auto_saz)
+checkresiduals(modelo_auto_saz)
+```
+
+Com a parte sazonal, o auto.arima escolhe o ARIMA(1,1,0)(2,1,1)[12], com AICc de 1146,2 e resíduos sem autocorrelação significativa (Ljung-Box com p-valor = 0,20). Porém os coeficientes sar1 e sar2 não são significativos (estimativas pequenas em relação aos erros padrão), sinal de que o modelo tem parâmetros demais.
+
+modelo sazonal sugerido pela ACF da diferença (lags 1 e 12)
+```{r}
+modelo3 <- Arima(ts_des, order = c(0,1,1), seasonal = c(0,1,1)) ##ARIMA(0,1,1)(0,1,1)[12]
+summary(modelo3)
+checkresiduals(modelo3)
+Pacf(modelo3$residuals)
+shapiro.test(modelo3$residuals)
+```
+
+visualização do ajuste
+```{r}
+autoplot(ts_des, series = "Observado") +
+  autolayer(
+    fitted(modelo3),
+    series = "ARIMA(0,1,1)(0,1,1)[12]"
+  ) +
+  labs(
+    x = "Tempo",
+    y = "Núm de casos",
+    colour = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+O ARIMA(0,1,1)(0,1,1)[12] tem AICc de 1129,2, menor que o do modelo escolhido pelo auto.arima, e usa só dois parâmetros. Isso acontece porque o auto.arima faz a busca passo a passo (stepwise) e não testa todas as combinações. Os resíduos não têm autocorrelação significativa (Ljung-Box com p-valor = 0,51). O teste de Shapiro-Wilk rejeita a normalidade dos resíduos (p-valor = 0,005), o que afeta os intervalos de previsão, mas não a previsão pontual.
+
+Análise de previsões com ARIMA
+
+testes de estacionariedade no treino
+```{r}
+tseries::adf.test(serie_treino)
+tseries::kpss.test(serie_treino)
+
+tseries::adf.test(diff(serie_treino, differences = 1))
+tseries::kpss.test(diff(serie_treino, differences = 1))
+```
+
+```{r}
+modelo_auto_treino <- auto.arima(
+  serie_treino,
+  d = 1,
+  max.p = 3,
+  max.q = 3,
+  seasonal = F,
+  allowdrift = F
+)
+
+summary(modelo_auto_treino)
+
+modelo_autosaz_treino <- auto.arima(
+  serie_treino,
+  d = 1,
+  max.p = 3,
+  max.q = 3,
+  seasonal = T,
+  allowdrift = F
+)
+
+summary(modelo_autosaz_treino)
+
+prev_auto <- forecast(modelo_auto_treino, h = n_teste)
+prev_auto_saz <- forecast(modelo_autosaz_treino, h = n_teste)
+```
+
+No treino os testes levam à mesma conclusão (d = 1). O auto.arima sem sazonalidade escolhe de novo o ARIMA(0,1,1), e o sazonal escolhe o ARIMA(0,1,1)(0,1,1)[12], o mesmo modelo que teve o menor AICc na série completa.
+
+comparação das previsoes
+```{r}
+autoplot(serie_treino, series = "Treino") +
+  autolayer(serie_teste, series = "Teste") +
+  autolayer(prev_auto$mean, series = "ARIMA(0,1,1)") +
+  autolayer(prev_auto_saz$mean, series = "ARIMA(0,1,1)(0,1,1)[12]") +
+  labs(
+    x = "Tempo",
+    y = "Núm de casos",
+    colour = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+medidas na base de teste
+```{r}
+accuracy(prev_auto, serie_teste)
+accuracy(prev_auto_saz, serie_teste)
+```
+
+O ARIMA(0,1,1) projeta um valor constante e erra bastante (MAPE de 6,90%), enquanto o ARIMA(0,1,1)(0,1,1)[12] acompanha o padrão do teste (MAPE de 2,82%). O melhor modelo ARIMA é o ARIMA(0,1,1)(0,1,1)[12].
+
+## Comparação final dos modelos
+
+```{r}
+## Regressao
+acc_tendencia <- accuracy(prev_tendencia, serie_teste)
+acc_sazonal <- accuracy(prev_sazonal, serie_teste)
+acc_quadratico <- accuracy(prev_quadratico, serie_teste)
+
+## Suavizacao
+acc_ANN <- accuracy(prev_ANN, serie_teste)
+acc_AAN <- accuracy(prev_AAN, serie_teste)
+acc_AAA <- accuracy(prev_AAA, serie_teste)
+
+## ARIMA
+acc_auto <- accuracy(prev_auto, serie_teste)
+acc_auto_saz <- accuracy(prev_auto_saz, serie_teste)
+
+comparacao <- data.frame(
+  Modelo = c(
+    "Regressao com tendencia",
+    "Regressao com tendencia + sazonalidade",
+    "Regressao com tendencia quadratica + sazonalidade",
+    "Suavizacao simples",
+    "Holt",
+    "Holt-Winters",
+    "ARIMA(0,1,1)",
+    "ARIMA(0,1,1)(0,1,1)[12]"
+  ),
+  RMSE_treino = c(
+    acc_tendencia[1, "RMSE"],
+    acc_sazonal[1, "RMSE"],
+    acc_quadratico[1, "RMSE"],
+    acc_ANN[1, "RMSE"],
+    acc_AAN[1, "RMSE"],
+    acc_AAA[1, "RMSE"],
+    acc_auto[1, "RMSE"],
+    acc_auto_saz[1, "RMSE"]
+  ),
+  RMSE = c(
+    acc_tendencia[2, "RMSE"],
+    acc_sazonal[2, "RMSE"],
+    acc_quadratico[2, "RMSE"],
+    acc_ANN[2, "RMSE"],
+    acc_AAN[2, "RMSE"],
+    acc_AAA[2, "RMSE"],
+    acc_auto[2, "RMSE"],
+    acc_auto_saz[2, "RMSE"]
+  ),
+  MAE = c(
+    acc_tendencia[2, "MAE"],
+    acc_sazonal[2, "MAE"],
+    acc_quadratico[2, "MAE"],
+    acc_ANN[2, "MAE"],
+    acc_AAN[2, "MAE"],
+    acc_AAA[2, "MAE"],
+    acc_auto[2, "MAE"],
+    acc_auto_saz[2, "MAE"]
+  ),
+  MAPE = c(
+    acc_tendencia[2, "MAPE"],
+    acc_sazonal[2, "MAPE"],
+    acc_quadratico[2, "MAPE"],
+    acc_ANN[2, "MAPE"],
+    acc_AAN[2, "MAPE"],
+    acc_AAA[2, "MAPE"],
+    acc_auto[2, "MAPE"],
+    acc_auto_saz[2, "MAPE"]
+  )
+)
+
+knitr::kable(comparacao, digits = 2)
+```
+
+A coluna RMSE_treino mede o ajuste no treino e as colunas RMSE, MAE e MAPE medem o erro de previsão no teste. No treino, os modelos com sazonalidade têm RMSE entre 38,1 e 41,4, contra 58,7 a 61,1 dos modelos sem sazonalidade. Os melhores de cada grupo ficam próximos no teste: regressão com tendência quadrática e sazonalidade (MAPE de 2,61%), ARIMA(0,1,1)(0,1,1)[12] (2,82%) e Holt-Winters (2,84%). Os modelos sem sazonalidade têm erros bem maiores, o que mostra a importância do componente sazonal nessa série.
+
+melhor modelo de cada grupo
+```{r}
+autoplot(window(serie_treino, start = c(2016, 1)), series = "Treino") +
+  autolayer(serie_teste, series = "Teste") +
+  autolayer(prev_quadratico$mean, series = "Regressao quadratica + sazonalidade") +
+  autolayer(prev_AAA$mean, series = "Holt-Winters") +
+  autolayer(prev_auto_saz$mean, series = "ARIMA(0,1,1)(0,1,1)[12]") +
+  guides(colour = guide_legend(nrow = 2)) +
+  labs(
+    x = "Tempo",
+    y = "Núm de casos",
+    colour = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+O modelo final escolhido é a regressão com tendência quadrática e sazonalidade: tem os menores erros no teste em todas as medidas, resíduos sem autocorrelação e coeficientes fáceis de interpretar. O ARIMA(0,1,1)(0,1,1)[12] fica bem próximo e é uma alternativa para horizontes mais longos, porque não depende de uma tendência quadrática.
+
+## Limitações e possíveis melhorias
+
+- A tendência quadrática funciona bem no horizonte de 18 meses, mas cresce cada vez mais rápido e pode superestimar previsões de longo prazo.
+- No Holt-Winters o beta e o gamma ficaram perto de zero e no ARIMA sazonal o coeficiente sma1 ficou perto de -1. Os dois resultados indicam que a sazonalidade é praticamente fixa, o que explica o bom desempenho da regressão com variáveis indicadoras de mês.
+- Os resíduos do ARIMA não seguem distribuição normal, então os intervalos de previsão devem ser vistos com cuidado. Uma transformação logarítmica ou de Box-Cox poderia ajudar.
+- A avaliação usa um único corte entre treino e teste. Uma validação cruzada com origem móvel (função `tsCV`) daria uma medida de erro mais estável.
+- Parte da variação entre os meses vem do número de dias (fevereiro sempre mais baixo). Usar a média diária ou incluir os dias do mês como variável poderia melhorar os modelos.
+- Outras opções de suavização, como o Holt-Winters amortecido ou multiplicativo, poderiam ser testadas.
+- Os dados terminam em 2019. Prever a partir de 2020 exigiria considerar os efeitos da pandemia.
+
+## Conclusão
+
+A série tem tendência crescente e sazonalidade anual bem definida. Os modelos que incluem a sazonalidade foram muito melhores que os demais, e os melhores de cada grupo tiveram desempenho parecido no teste, com MAPE entre 2,6% e 2,9%. O modelo final escolhido foi a regressão com tendência quadrática e sazonalidade.
