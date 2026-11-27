@@ -166,7 +166,7 @@ O relatório segue a ordem da análise: descrição dos dados, análise explorat
 
 ## Fonte e descrição
 
-A série tem 120 observações mensais do número de casos de suicídio, de janeiro de 2010 a dezembro de 2019. **[COMPLETAR: fonte dos dados com link, abrangência geográfica e definição de caso, por exemplo os códigos da CID-10 usados.]** São dados reais, que não foram trabalhados na disciplina.
+A série reúne 120 contagens mensais de óbitos por suicídio no Brasil, de janeiro de 2010 a dezembro de 2019. A fonte é o conjunto [Dados de Suicídios entre 2010 e 2019, publicado no Kaggle](https://www.kaggle.com/datasets/psicodata/dados-de-suicidios-entre-2010-e-2019). São dados reais, não trabalhados na disciplina. Segundo a descrição do publicador, os registros vieram do Sistema de Informações sobre Mortalidade (SIM/DATASUS), extraídos com PySUS. A seleção considerou a causa básica do óbito (`CAUSABAS` ou `CAUSABAS_O`) e o intervalo de códigos informado como `X600` a `X850`.
 
 O período de 10 anos é maior que os 3 a 5 anos recomendados para séries mensais. Isso dá informação suficiente para estimar a tendência e a sazonalidade e ainda reservar 18 meses para o teste. A série termina em dezembro de 2019 para não incluir a pandemia de COVID-19, que poderia mudar o comportamento da série a partir de 2020.
 
@@ -200,9 +200,7 @@ limites_aiq <- c(quartis[1] - 1.5 * aiq, quartis[2] + 1.5 * aiq)
 n_atipicos <- sum(desviv$Casos < limites_aiq[1] | desviv$Casos > limites_aiq[2])
 ```
 
-O arquivo `total_por_ano_e_mes.csv` tem uma linha por mês, com a data (`index`) e o número de casos (`n`). As colunas foram renomeadas para `Data` e `Casos`, e foram criadas as colunas `Ano` e `Mes`. A verificação no código confirma `r nrow(desviv)` meses consecutivos, de janeiro de 2010 a dezembro de 2019, sem datas repetidas ou faltantes e sem valores ausentes. Nenhum valor foi alterado ou excluído.
-
-Pelo critério da distância interquartílica, seriam atípicos os meses fora do intervalo de `r f(limites_aiq[1], 1)` a `r f(limites_aiq[2], 1)` casos; `r if (n_atipicos == 0) "nenhum mês" else paste(n_atipicos, "meses")` fica fora dele. Como esse critério não considera tendência nem sazonalidade, o componente irregular da decomposição também é avaliado na @sec-decomposicao.
+O arquivo `total_por_ano_e_mes.csv` tem uma linha por mês, com a data (`index`) e o número de casos (`n`). As colunas foram renomeadas para `Data` e `Casos`, e foram criadas as colunas `Ano` e `Mes`. A verificação no código confirma `r nrow(desviv)` meses consecutivos, de janeiro de 2010 a dezembro de 2019, sem datas repetidas ou faltantes e sem valores ausentes. Nenhum valor foi alterado ou excluído. Pelo critério da distância interquartílica, seriam atípicos os meses fora do intervalo de `r f(limites_aiq[1], 1)` a `r f(limites_aiq[2], 1)` casos; `r if (n_atipicos == 0) "nenhum mês" else paste(n_atipicos, "meses")` fica fora dele. Como esse critério não considera tendência nem sazonalidade, o componente irregular da decomposição também é avaliado na @sec-decomposicao.
 
 # Análise exploratória
 
