@@ -1,625 +1,627 @@
 ---
-title: "Trabalho Pratico"
+title: "Trabalho Prático de Métodos Estatísticos de Previsão"
+subtitle: "Análise temporal do número mensal de casos de suicídio entre 2010 e 2019"
 author:
   - Daniel Fernandes da Cruz
   - Joao Alexandre Meirelles Matencio
   - Ronald Rodrigues Souza Nunes
-format: pdf
+lang: pt-BR
+format:
+  pdf:
+    papersize: a4
+    toc: true
+    toc-title: "Sumário"
+    toc-depth: 2
+    number-sections: true
+    fontsize: 11pt
+    geometry:
+      - margin=2.5cm
+    fig-align: center
 execute:
-  warning: false
+  echo: false
   message: false
+  warning: false
 ---
 
 ```{r}
-library(dplyr)
-library(tidyr)
-library(readxl)
+#| label: preparacao
+#| include: false
 library(forecast)
 library(ggplot2)
-library(lubridate)
-library(tseries)
+library(knitr)
+
+dados <- read.csv("total_por_ano_e_mes.csv", check.names = FALSE)
+
+dados$Data <- as.Date(dados$index)
+dados$Casos <- as.numeric(dados$n)
+dados <- dados[order(dados$Data), ]
+datas_esperadas <- seq(as.Date("2010-01-01"), as.Date("2019-12-01"), by = "month")
+
+serie <- ts(dados$Casos, start = c(2010, 1), frequency = 12)
+n_teste <- 18L
+treino <- window(serie, end = c(2018, 6))
+teste <- window(serie, start = c(2018, 7))
+
+
+valor_p <- function(modelo) {
+  e <- as.numeric(residuals(modelo))
+  e <- e[is.finite(e)]
+  Box.test(e, lag = 24, type = "Ljung-Box")$p.value
+}
+
 ```
 
-## Descrição dos dados
+# Introdução
 
-A série analisada é o número mensal de casos de **[COMPLETAR: fonte dos dados e definição de caso]**, de janeiro de 2010 a dezembro de 2019, totalizando 120 observações. Usamos 10 anos de dados, mais do que os 3 a 5 anos recomendados para séries mensais, o que ajuda a estimar a tendência e a sazonalidade. O período termina em 2019 para não incluir a pandemia de COVID-19, que poderia mudar o comportamento da série a partir de 2020.
+A previsão do número mensal de casos de suicídio exige reconhecer como a série muda ao longo do tempo e se há oscilações que se repetem a cada ano. Para estudar esse problema, analisamos 120 observações mensais, de janeiro de 2010 a dezembro de 2019, e comparamos três famílias de modelos: regressão, suavização exponencial e ARIMA. O objetivo é identificar qual delas produz previsões mais precisas para os meses reservados à avaliação.
 
-A base tem uma linha por mês, com a data (`index`) e o número de casos (`n`). As colunas foram renomeadas para `Data` e `Casos`, e foram criadas as colunas `Ano` e `Mes`.
+# Dados e análise exploratória
 
-leitura dos dados e criação da série mensal
-```{r}
-desviv <- read.csv("total_por_ano_e_mes.csv")
-names(desviv)[names(desviv) == "index"] <- "Data"
-names(desviv)[names(desviv) == "n"] <- "Casos"
-desviv <- desviv %>%
-  mutate(
-    Data = as.Date(Data),
-    Ano = year(Data),
-    Mes = month(Data)
-  )
+## Descrição e verificação
 
-ts_des <- ts(desviv$Casos, start = c(2010, 1), frequency = 12)
-```
+O arquivo `total_por_ano_e_mes.csv` contém uma observação por mês. As colunas `index` e `n` representam, respectivamente, a data e a contagem. A verificação do código confirma que as datas vão de janeiro de 2010 a dezembro de 2019, sem duplicatas, meses ausentes ou valores faltantes. Não foram feitas exclusões nem alterações dos valores originais.
+
+## Divisão entre treino e teste
+
+Dos 120 meses, os 102 primeiros (janeiro de 2010 a junho de 2018) formam o treino; os 18 últimos (julho de 2018 a dezembro de 2019) formam o teste. Essa divisão cronológica respeita o limite do enunciado para dados mensais. A escolha de candidatos e a análise de resíduos usam apenas o treino. O teste é reservado à comparação final entre as três famílias.
+
+Na regressão e na suavização, usamos o AICc e o diagnóstico dos resíduos para escolher um candidato no treino. Para ARIMA, seguimos a identificação e revisão Box-Jenkins, selecionando pelo menor AIC entre os candidatos com resíduos adequados. O teste de Ljung-Box usa 24 defasagens; no ARIMA, descontamos os parâmetros AR e MA. Para comparar previsões, usamos MAE, RMSE e MASE; este último usa como escala o erro da previsão sazonal ingênua de 12 meses no treino.
 
 ## Análise exploratória
 
 ```{r}
-autoplot(ts_des) +
-  labs(
-    x = "Tempo",
-    y = "Núm de casos"
-  ) +
+#| label: tbl-descritiva
+#| tbl-cap: "Estatísticas descritivas da série"
+resumo <- data.frame(
+  Medida = c("Mínimo", "Mediana", "Média", "Máximo", "Desvio padrão"),
+  Valor = c(min(serie), median(serie), mean(serie), max(serie), sd(serie))
+)
+knitr::kable(resumo, digits = 1)
+```
+
+A tabela resume o nível e a dispersão da série. Pelo critério exploratório da distância interquartílica, não foram sinalizados valores atípicos; esse critério, isoladamente, não considera tendência ou sazonalidade.
+
+```{r}
+#| label: fig-serie
+#| fig-cap: "Série mensal observada no período de treino"
+#| fig-pos: H
+autoplot(treino) +
+  labs(x = "Ano", y = "Número de casos") +
   theme_minimal()
 ```
 
-A série cresce ao longo de todo o período, passando de cerca de 800 casos por mês em 2010 para mais de 1100 em 2019, e tem oscilações que se repetem dentro de cada ano.
+O gráfico permite avaliar a evolução do nível e as oscilações mensais. A decomposição aditiva abaixo separa essas oscilações em tendência, componente sazonal e componente irregular.
 
-estatísticas descritivas
 ```{r}
-summary(desviv$Casos)
-sd(desviv$Casos)
+#| label: fig-decomposicao
+#| fig-cap: "Decomposição aditiva da série temporal de treino"
+#| fig-height: 8
+#| fig-pos: H
+decomposicao <- decompose(treino, type = "additive")
+op <- par(no.readonly = TRUE)
+par(mfrow = c(4, 1), mar = c(2, 4, 2, 1))
+plot(decomposicao$x, main = "Série observada", xlab = "", ylab = "Casos")
+plot(decomposicao$trend, main = "Tendência", xlab = "", ylab = "Casos")
+plot(decomposicao$seasonal, main = "Sazonalidade", xlab = "", ylab = "Casos")
+plot(decomposicao$random, main = "Componente irregular", xlab = "Ano", ylab = "Casos")
+par(op)
 ```
 
-total, média e desvio padrão por ano
 ```{r}
-desviv %>%
-  group_by(Ano) %>%
-  summarise(
-    Total = sum(Casos),
-    Media = mean(Casos),
-    DP = sd(Casos)
-  )
+#| label: fig-acf-original
+#| fig-cap: "Autocorrelação da série de treino antes das diferenças"
+#| fig-pos: H
+acf(treino, main = "ACF da série de treino")
 ```
 
-A média geral é de 937 casos por mês, com desvio padrão de 120, mínimo de 702 e máximo de 1225. O total anual aumenta em todos os anos, de 9.476 casos em 2010 para 13.554 em 2019, um aumento de cerca de 43%.
+A ACF mostra a persistência temporal da série original. A identificação das diferenças e dos termos ARIMA é feita adiante, apenas com a amostra de treino.
 
-média por mês
+# Regressão
+
+## Modelos candidatos
+
+Comparamos tendência linear, tendência linear com indicadores de mês e tendência quadrática com indicadores de mês. Os gráficos de ajuste usam somente a série de treino.
+
 ```{r}
-desviv %>%
-  group_by(Mes) %>%
-  summarise(Media = mean(Casos))
-```
-
-Os meses com maior média são dezembro (1020), outubro (988) e março (968), e os de menor média são junho (858), julho (880) e fevereiro (890), que também tem menos dias.
-
-decomposição da série
-```{r}
-decomposicao <- decompose(ts_des)
-plot(decomposicao)
-```
-
-A decomposição mostra a tendência crescente, com crescimento mais forte a partir de 2016, e um componente sazonal com pico em dezembro (68 casos acima da tendência) e vale em junho (77 casos abaixo).
-
-autocorrelação e autocorrelação parcial
-```{r}
-acf(ts_des)
-Acf(ts_des)
-Pacf(ts_des)
-```
-
-A ACF decai lentamente e as autocorrelações ficam acima dos limites em todos os lags, efeito da tendência. Isso indica que a série não é estacionária.
-
-testes de estacionariedade
-```{r}
-tseries::adf.test(ts_des)
-tseries::kpss.test(ts_des)
-```
-
-Na série original os testes discordam. O ADF rejeita a hipótese de raiz unitária (p-valor < 0,01), mas o teste do pacote tseries inclui uma tendência linear, então indica no máximo estacionariedade em torno da tendência. O KPSS rejeita a hipótese de estacionariedade (p-valor < 0,01). Como a tendência é clara no gráfico e na ACF, aplicamos uma diferença.
-
-série com uma diferença
-```{r}
-ts_des_diff <- diff(ts_des, differences = 1)
-autoplot(ts_des_diff) +
-  labs(
-    x = "Tempo",
-    y = "Diferença do núm de casos"
-  ) +
-  theme_minimal()
-
-tseries::adf.test(ts_des_diff)
-tseries::kpss.test(ts_des_diff)
-
-Acf(ts_des_diff)
-Pacf(ts_des_diff)
-```
-
-Com uma diferença, o ADF continua rejeitando a raiz unitária (p-valor < 0,01) e o KPSS não rejeita a estacionariedade (p-valor > 0,1), então usamos d = 1 nos modelos ARIMA. Na ACF da série diferenciada o lag 1 é negativo e significativo (-0,49), o que sugere um termo MA(1), e aparecem picos nos lags 12 e 24, que indicam sazonalidade anual. A PACF tem vários lags negativos significativos, sem um corte claro, o que também é compatível com um termo de médias móveis.
-
-## Modelagem
-
-### Modelos de regressão
-
-Modelo apenas com tendência
-```{r}
-modelo_tendencia <- tslm(ts_des ~ trend)
-summary(modelo_tendencia)
-checkresiduals(modelo_tendencia, test = 'LB')
-```
-
-O modelo só com tendência tem R² ajustado de 0,76, mas os resíduos têm autocorrelação forte (Ljung-Box com p-valor < 0,001), porque a sazonalidade não está no modelo.
-
-Modelo com tendência e sazonalidade
-```{r}
-modelo_sazonal_referencia <- tslm(ts_des ~ trend + season)
-summary(modelo_sazonal_referencia)
-```
-
-Parametrização com restrição de soma zero
-```{r}
-sazonalidade <- factor(cycle(ts_des))
-contrasts(sazonalidade) <- contr.sum(12)
-modelo_sazonal_soma_zero <- tslm(
-  ts_des ~ trend + sazonalidade
+#| label: ajuste-regressao
+#| include: false
+regressoes <- list(
+  "Tendência linear" = tslm(treino ~ trend),
+  "Tendência + sazonalidade" = tslm(treino ~ trend + season),
+  "Tendência quadrática + sazonalidade" =
+    tslm(treino ~ trend + I(trend^2) + season)
 )
-
-summary(modelo_sazonal_soma_zero)
-checkresiduals(modelo_sazonal_soma_zero, test = 'LB')
-```
-verificando a equivalencia dos ajustes
-```{r}
-all.equal(
-  as.numeric(fitted(modelo_sazonal_referencia)),
-  as.numeric(fitted(modelo_sazonal_soma_zero))
+k_reg <- vapply(regressoes, function(modelo) length(coef(modelo)) + 1L, integer(1))
+aicc_reg <- vapply(regressoes, AIC, numeric(1)) +
+  2 * k_reg * (k_reg + 1) / (length(treino) - k_reg - 1)
+tab_reg <- data.frame(
+  Modelo = names(regressoes),
+  AICc = as.numeric(aicc_reg),
+  `Valor-p` = format.pval(unname(vapply(regressoes, valor_p, numeric(1))),
+                         digits = 3, eps = 0.001),
+  check.names = FALSE
 )
-
+nome_reg <- names(aicc_reg)[which.min(aicc_reg)]
+melhor_reg <- regressoes[[nome_reg]]
+prev_reg <- forecast(melhor_reg, h = n_teste)
+prev_reg_candidatos <- lapply(regressoes, forecast, h = n_teste)
 ```
+
+### Tendência linear
+
 ```{r}
-autoplot(ts_des, series = "Observado") +
-  autolayer(
-    fitted(modelo_sazonal_soma_zero),
-    series = "Tendencia + sazonalidade"
-  ) +
-  labs(
-    x = "Tempo",
-    y = "Núm de casos",
-    colour = ""
-  ) +
+#| label: fig-ajuste-tendencia
+#| fig-cap: "Ajuste da regressão com tendência linear no treino"
+#| fig-width: 7
+#| fig-pos: H
+autoplot(treino, series = "Observado") +
+  autolayer(fitted(regressoes[["Tendência linear"]]), series = "Ajustado") +
+  labs(x = "Ano", y = "Número de casos", colour = "Série") +
   theme_minimal() +
   theme(legend.position = "bottom")
 ```
 
-Com a sazonalidade o R² ajustado sobe para 0,87. As duas parametrizações dão os mesmos valores ajustados (o `all.equal` retorna TRUE); na de soma zero cada coeficiente é o desvio do mês em relação à média, o que facilita a leitura. O Ljung-Box ainda rejeita a hipótese de resíduos não correlacionados (p-valor < 0,001).
+### Tendência e sazonalidade
 
-Testando modelo com tendencia ao quadrado e sazonalidade
 ```{r}
-sazonalidade <- factor(cycle(ts_des))
-contrasts(sazonalidade) <- contr.sum(12)
-modelo_reg_quadratico <- tslm(ts_des ~ trend + I(trend^2) + sazonalidade)
-
-summary(modelo_reg_quadratico)
-checkresiduals(modelo_reg_quadratico, test = 'LB')
-```
-
-visualização do ajuste do modelo quadratico
-```{r}
-autoplot(ts_des, series = "Observado") +
-  autolayer(
-    fitted(modelo_reg_quadratico),
-    series = "Tendencia quadratica + sazonalidade"
-  ) +
-  labs(
-    x = "Tempo",
-    y = "Núm de casos",
-    colour = ""
-  ) +
+#| label: fig-ajuste-sazonal
+#| fig-cap: "Ajuste da regressão com tendência e sazonalidade no treino"
+#| fig-width: 7
+#| fig-pos: H
+autoplot(treino, series = "Observado") +
+  autolayer(fitted(regressoes[["Tendência + sazonalidade"]]), series = "Ajustado") +
+  labs(x = "Ano", y = "Número de casos", colour = "Série") +
   theme_minimal() +
   theme(legend.position = "bottom")
 ```
 
-O termo quadrático é significativo (p-valor < 0,001) e o R² ajustado chega a 0,89. Com ele os resíduos deixam de ter autocorrelação significativa (Ljung-Box com p-valor = 0,44).
-
-Análise de previsões com regressão
-
-Para avaliar as previsões, os dados foram separados em treino e teste. Como 20% de 120 meses dá 24 meses, acima do limite de 18 meses para dados mensais, o teste fica com os últimos 18 meses (julho de 2018 a dezembro de 2019) e o treino com os 102 primeiros (janeiro de 2010 a junho de 2018). A mesma divisão é usada em todos os modelos.
+### Tendência quadrática e sazonalidade
 
 ```{r}
-n <- length(ts_des)
-n_teste <- min(18, round(.2*n))
-
-serie_treino <- window(
-  ts_des,
-  end = time(ts_des)[n - n_teste]
-)
-
-serie_teste <- window(
-  ts_des,
-  start = time(ts_des)[n - n_teste + 1]
-)
-
-autoplot(serie_treino, series = "Treino") +
-  autolayer(serie_teste, series = "Teste") +
-  labs(
-    x = "Tempo",
-    y = "Núm de casos",
-    colour = ""
-  ) +
+#| label: fig-ajuste-quadratico
+#| fig-cap: "Ajuste da regressão com tendência quadrática e sazonalidade no treino"
+#| fig-width: 7
+#| fig-pos: H
+autoplot(treino, series = "Observado") +
+  autolayer(fitted(regressoes[["Tendência quadrática + sazonalidade"]]),
+            series = "Ajustado") +
+  labs(x = "Ano", y = "Número de casos", colour = "Série") +
   theme_minimal() +
   theme(legend.position = "bottom")
 ```
 
-Ajuste com tendencia, tendencia e sazonalidade e tendencia quadratica e sazonalidade
+Os ajustes individuais mostram o efeito de acrescentar os indicadores mensais e o termo quadrático. A escolha considera o AICc e o diagnóstico dos resíduos no treino.
+
+## Seleção e diagnóstico
+
 ```{r}
-modelo_tendencia_treino <- tslm(serie_treino ~ trend)
-prev_tendencia <- forecast(modelo_tendencia_treino, h = n_teste)
-
-modelo_reg_sazonal_treino <- tslm(serie_treino ~ trend + season)
-prev_sazonal <- forecast(modelo_reg_sazonal_treino, h = n_teste)
-
-modelo_reg_quadratico_treino <- tslm(
-  serie_treino ~ trend + I(trend^2) + season)
-prev_quadratico <- forecast(
-  modelo_reg_quadratico_treino,
-  h = n_teste
-)
+#| label: tbl-regressao
+#| tbl-cap: "Comparação dos modelos de regressão no treino: AICc e teste de Ljung-Box"
+knitr::kable(tab_reg, digits = 3, row.names = FALSE,
+             align = c("l", "r", "r"))
 ```
 
-comparação das previsoes
+O modelo com menor critério de informação na tabela é o representante da regressão. O valor-p de Ljung-Box ajuda a avaliar a dependência remanescente dos resíduos; o gráfico seguinte permite examinar sua evolução no tempo.
+
 ```{r}
-autoplot(serie_treino, series = "Treino") +
-  autolayer(serie_teste, series = "Teste") +
-  autolayer(prev_tendencia$mean, series = "Tendencia") +
-  autolayer(prev_sazonal$mean, series = "Tendencia + sazonalidade") +
-  autolayer(prev_quadratico$mean, series = "Tendencia quadratica + sazonalidade") +
-  guides(colour = guide_legend(nrow = 2)) +
-  labs(
-    x = "Tempo",
-    y = "Núm de casos",
-    colour = ""
-  ) +
+#| label: fig-residuos-regressao
+#| fig-cap: "Resíduos ao longo do treino para a regressão selecionada"
+plot(as.numeric(residuals(melhor_reg)), type = "l",
+     xlab = "Mês no treino", ylab = "Resíduo")
+```
+
+## Previsões dos modelos de regressão
+
+```{r}
+#| label: fig-previsao-regressao
+#| fig-cap: "Previsões dos modelos de regressão; a linha tracejada marca o início do teste"
+#| fig-width: 7
+#| fig-pos: H
+autoplot(window(serie, start = c(2016, 1)), series = "Observado") +
+  geom_vline(xintercept = time(teste)[1], linetype = "dashed", colour = "grey40") +
+  autolayer(prev_reg_candidatos[["Tendência linear"]]$mean,
+            series = "Tendência linear") +
+  autolayer(prev_reg_candidatos[["Tendência + sazonalidade"]]$mean,
+            series = "Tendência + sazonalidade") +
+  autolayer(prev_reg_candidatos[["Tendência quadrática + sazonalidade"]]$mean,
+            series = "Tendência quadrática + sazonalidade") +
+  labs(x = "Ano", y = "Número de casos", colour = "Série") +
   theme_minimal() +
   theme(legend.position = "bottom")
 ```
 
-medidas na base de teste
+O gráfico compara o comportamento das previsões no horizonte de teste. A escolha do representante da regressão foi feita antes dessa comparação, com os dados de treino.
+
+# Suavização exponencial
+
+## Modelos candidatos
+
+Comparamos suavização exponencial simples, que atualiza o nível; Holt, que acrescenta tendência; e Holt-Winters, que também incorpora sazonalidade aditiva. A escolha usa os ajustes e diagnósticos no treino.
+
 ```{r}
-accuracy(prev_tendencia, serie_teste)
-accuracy(prev_sazonal, serie_teste)
-accuracy(prev_quadratico, serie_teste)
-```
-
-Na base de teste o modelo quadrático tem os menores erros em todas as medidas (RMSE = 34,82, MAE = 29,32 e MAPE = 2,61%), contra MAPE de 4,71% do modelo só com tendência e 3,87% do modelo com tendência linear e sazonalidade. Os modelos com tendência linear subestimam os valores do teste (erro médio, ME, de 46 e 43 casos por mês), porque não acompanham o crescimento mais forte dos últimos anos, enquanto o modelo quadrático fica praticamente sem viés (ME = -1,87).
-
-O melhor modelo de regressão é o de tendência quadrática e sazonalidade: tem o maior R² ajustado, resíduos sem autocorrelação e os menores erros de previsão.
-
-### Modelos de suavização exponencial
-
-Suavização exponencial simples: ETS(A,N,N)
-```{r}
-modelo_ANN <- ets(ts_des, model = "ANN", damped = FALSE)
-summary(modelo_ANN)
-checkresiduals(modelo_ANN)
-```
-
-Método de Holt: ETS(A,A,N)
-```{r}
-modelo_AAN <- ets(ts_des, model = "AAN", damped = FALSE)
-summary(modelo_AAN)
-checkresiduals(modelo_AAN)
-```
-
-A suavização simples só acompanha o nível da série e o método de Holt acrescenta a tendência, mas nenhum dos dois captura a sazonalidade, e os resíduos continuam autocorrelacionados (Ljung-Box com p-valor < 0,001).
-
-Método de Holt-Winters: ETS(A,A,A)
-```{r}
-modelo_AAA <- ets(ts_des, model = "AAA", damped = FALSE)
-summary(modelo_AAA)
-modelo_AAA$par
-```
-
-visualização do ajuste do Holt-Winters
-```{r}
-autoplot(ts_des, series = "Observado") +
-  autolayer(
-    fitted(modelo_AAA),
-    series = "Holt-Winters"
-  ) +
-  labs(
-    x = "Tempo",
-    y = "Núm de casos",
-    colour = ""
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-checkresiduals(modelo_AAA)
-```
-
-comparação dos modelos de suavização pelo AICc
-```{r}
-modelo_ANN$aicc
-modelo_AAN$aicc
-modelo_AAA$aicc
-```
-
-O Holt-Winters tem o menor AICc (1487,9, contra 1563,8 da suavização simples e 1559,1 do Holt). O alpha estimado foi 0,15 e o beta e o gamma ficaram praticamente zero: o nível é atualizado aos poucos, enquanto a tendência e a sazonalidade ficam quase fixas ao longo do tempo. Os resíduos não têm autocorrelação significativa (Ljung-Box com p-valor = 0,62).
-
-Análise de previsões com suavização exponencial
-```{r}
-modelo_ANN_treino <- ets(
-  serie_treino,
-  model = "ANN",
-  damped = FALSE
+#| label: ajuste-suavizacao
+#| include: false
+suavizacoes <- list(
+  "Suavização simples" = ets(treino, model = "ANN"),
+  "Holt" = ets(treino, model = "AAN"),
+  "Holt-Winters" = ets(treino, model = "AAA")
 )
-
-modelo_AAN_treino <- ets(
-  serie_treino,
-  model = "AAN",
-  damped = FALSE
+aicc_suav <- vapply(suavizacoes, function(x) x$aicc, numeric(1))
+tab_suav <- data.frame(
+  Modelo = names(suavizacoes),
+  AICc = as.numeric(aicc_suav),
+  `Valor-p` = format.pval(unname(vapply(suavizacoes, valor_p, numeric(1))),
+                         digits = 3, eps = 0.001),
+  check.names = FALSE
 )
-
-modelo_AAA_treino <- ets(
-  serie_treino,
-  model = "AAA",
-  damped = FALSE
-)
-
-prev_ANN <- forecast(modelo_ANN_treino, h = n_teste)
-prev_AAN <- forecast(modelo_AAN_treino, h = n_teste)
-prev_AAA <- forecast(modelo_AAA_treino, h = n_teste)
+nome_suav <- names(aicc_suav)[which.min(aicc_suav)]
+melhor_suav <- suavizacoes[[nome_suav]]
+prev_suav <- forecast(melhor_suav, h = n_teste)
+prev_suav_candidatos <- lapply(suavizacoes, forecast, h = n_teste)
 ```
 
-comparação das previsoes
+### Suavização exponencial simples
+
+Este modelo acompanha apenas o nível da série. Sua previsão é constante ao longo do horizonte, o que permite avaliar a importância de acrescentar tendência e sazonalidade nos candidatos seguintes.
+
 ```{r}
-autoplot(serie_treino, series = "Treino") +
-  autolayer(serie_teste, series = "Teste") +
-  autolayer(prev_ANN$mean, series = "Suavizacao simples") +
-  autolayer(prev_AAN$mean, series = "Holt") +
-  autolayer(prev_AAA$mean, series = "Holt-Winters") +
-  labs(
-    x = "Tempo",
-    y = "Núm de casos",
-    colour = ""
-  ) +
+#| label: fig-ajuste-suavizacao-simples
+#| fig-cap: "Ajuste da suavização exponencial simples no treino"
+#| fig-width: 7
+#| fig-pos: H
+autoplot(treino, series = "Observado") +
+  autolayer(fitted(suavizacoes[["Suavização simples"]]), series = "Ajustado") +
+  labs(x = "Ano", y = "Número de casos", colour = "Série") +
   theme_minimal() +
   theme(legend.position = "bottom")
 ```
 
-medidas na base de teste
+### Holt
+
 ```{r}
-accuracy(prev_ANN, serie_teste)
-accuracy(prev_AAN, serie_teste)
-accuracy(prev_AAA, serie_teste)
-```
-
-O Holt-Winters tem os menores erros no teste (MAPE de 2,84%), bem abaixo da suavização simples (6,74%) e do Holt (4,00%). A suavização simples projeta um valor constante e o Holt uma reta, então nenhum dos dois acompanha a sazonalidade. O melhor modelo de suavização é o Holt-Winters.
-
-### Modelos ARIMA
-
-Pela ACF e PACF da série diferenciada, testando primeiro um MA(1) e um AR(1) na diferença
-```{r}
-modelo1 <- Arima(ts_des, order = c(0,1,1)) ##ARIMA(0,1,1)
-summary(modelo1)
-
-modelo2 <- Arima(ts_des, order = c(1,1,0)) ##ARIMA(1,1,0)
-summary(modelo2)
-
-checkresiduals(modelo1)
-checkresiduals(modelo2)
-```
-
-auto.arima sem sazonalidade, com d = 1
-```{r}
-modelo_auto <- auto.arima(ts_des,
-                          d=1,
-                          max.p=3,
-                          max.q=3,
-                          seasonal=F,
-                          allowdrift=F)
-
-summary(modelo_auto)
-```
-
-O ARIMA(0,1,1) tem AICc menor que o ARIMA(1,1,0) (1318,3 contra 1323,5) e o auto.arima sem sazonalidade escolhe o mesmo ARIMA(0,1,1). Mesmo assim os dois modelos deixam autocorrelação nos resíduos (Ljung-Box com p-valor < 0,001), porque não têm a parte sazonal.
-
-incluindo a parte sazonal
-```{r}
-modelo_auto_saz <- auto.arima(ts_des,
-                              d=1,
-                              max.p=3,
-                              max.q=3,
-                              allowdrift=F)
-
-summary(modelo_auto_saz)
-checkresiduals(modelo_auto_saz)
-```
-
-Com a parte sazonal, o auto.arima escolhe o ARIMA(1,1,0)(2,1,1)[12], com AICc de 1146,2 e resíduos sem autocorrelação significativa (Ljung-Box com p-valor = 0,20). Porém os coeficientes sar1 e sar2 não são significativos (estimativas pequenas em relação aos erros padrão), sinal de que o modelo tem parâmetros demais.
-
-modelo sazonal sugerido pela ACF da diferença (lags 1 e 12)
-```{r}
-modelo3 <- Arima(ts_des, order = c(0,1,1), seasonal = c(0,1,1)) ##ARIMA(0,1,1)(0,1,1)[12]
-summary(modelo3)
-checkresiduals(modelo3)
-Pacf(modelo3$residuals)
-shapiro.test(modelo3$residuals)
-```
-
-visualização do ajuste
-```{r}
-autoplot(ts_des, series = "Observado") +
-  autolayer(
-    fitted(modelo3),
-    series = "ARIMA(0,1,1)(0,1,1)[12]"
-  ) +
-  labs(
-    x = "Tempo",
-    y = "Núm de casos",
-    colour = ""
-  ) +
+#| label: fig-ajuste-holt
+#| fig-cap: "Ajuste do método de Holt no treino"
+#| fig-width: 7
+#| fig-pos: H
+autoplot(treino, series = "Observado") +
+  autolayer(fitted(suavizacoes[["Holt"]]), series = "Ajustado") +
+  labs(x = "Ano", y = "Número de casos", colour = "Série") +
   theme_minimal() +
   theme(legend.position = "bottom")
 ```
 
-O ARIMA(0,1,1)(0,1,1)[12] tem AICc de 1129,2, menor que o do modelo escolhido pelo auto.arima, e usa só dois parâmetros. Isso acontece porque o auto.arima faz a busca passo a passo (stepwise) e não testa todas as combinações. Os resíduos não têm autocorrelação significativa (Ljung-Box com p-valor = 0,51). O teste de Shapiro-Wilk rejeita a normalidade dos resíduos (p-valor = 0,005), o que afeta os intervalos de previsão, mas não a previsão pontual.
-
-Análise de previsões com ARIMA
-
-testes de estacionariedade no treino
-```{r}
-tseries::adf.test(serie_treino)
-tseries::kpss.test(serie_treino)
-
-tseries::adf.test(diff(serie_treino, differences = 1))
-tseries::kpss.test(diff(serie_treino, differences = 1))
-```
+### Holt-Winters
 
 ```{r}
-modelo_auto_treino <- auto.arima(
-  serie_treino,
-  d = 1,
-  max.p = 3,
-  max.q = 3,
-  seasonal = F,
-  allowdrift = F
-)
-
-summary(modelo_auto_treino)
-
-modelo_autosaz_treino <- auto.arima(
-  serie_treino,
-  d = 1,
-  max.p = 3,
-  max.q = 3,
-  seasonal = T,
-  allowdrift = F
-)
-
-summary(modelo_autosaz_treino)
-
-prev_auto <- forecast(modelo_auto_treino, h = n_teste)
-prev_auto_saz <- forecast(modelo_autosaz_treino, h = n_teste)
-```
-
-No treino os testes levam à mesma conclusão (d = 1). O auto.arima sem sazonalidade escolhe de novo o ARIMA(0,1,1), e o sazonal escolhe o ARIMA(0,1,1)(0,1,1)[12], o mesmo modelo que teve o menor AICc na série completa.
-
-comparação das previsoes
-```{r}
-autoplot(serie_treino, series = "Treino") +
-  autolayer(serie_teste, series = "Teste") +
-  autolayer(prev_auto$mean, series = "ARIMA(0,1,1)") +
-  autolayer(prev_auto_saz$mean, series = "ARIMA(0,1,1)(0,1,1)[12]") +
-  labs(
-    x = "Tempo",
-    y = "Núm de casos",
-    colour = ""
-  ) +
+#| label: fig-ajuste-holt-winters
+#| fig-cap: "Ajuste do método de Holt-Winters no treino"
+#| fig-width: 7
+#| fig-pos: H
+autoplot(treino, series = "Observado") +
+  autolayer(fitted(suavizacoes[["Holt-Winters"]]), series = "Ajustado") +
+  labs(x = "Ano", y = "Número de casos", colour = "Série") +
   theme_minimal() +
   theme(legend.position = "bottom")
 ```
 
-medidas na base de teste
+O ajuste do Holt-Winters permite avaliar se seus componentes de nível, tendência e sazonalidade acompanham a série de treino.
+
+## Seleção e diagnóstico
+
 ```{r}
-accuracy(prev_auto, serie_teste)
-accuracy(prev_auto_saz, serie_teste)
+#| label: tbl-suavizacao
+#| tbl-cap: "Comparação dos modelos de suavização exponencial no treino: AICc e teste de Ljung-Box"
+knitr::kable(tab_suav, digits = 3, row.names = FALSE,
+             align = c("l", "r", "r"))
 ```
 
-O ARIMA(0,1,1) projeta um valor constante e erra bastante (MAPE de 6,90%), enquanto o ARIMA(0,1,1)(0,1,1)[12] acompanha o padrão do teste (MAPE de 2,82%). O melhor modelo ARIMA é o ARIMA(0,1,1)(0,1,1)[12].
-
-## Comparação final dos modelos
+O modelo com menor critério de informação na tabela representa a família de suavização. O valor-p de Ljung-Box e a ACF dos resíduos ajudam a verificar se restou um padrão temporal não capturado.
 
 ```{r}
-## Regressao
-acc_tendencia <- accuracy(prev_tendencia, serie_teste)
-acc_sazonal <- accuracy(prev_sazonal, serie_teste)
-acc_quadratico <- accuracy(prev_quadratico, serie_teste)
+#| label: fig-residuos-suavizacao
+#| fig-cap: "Resíduos do modelo de suavização selecionado"
+residuos_suav <- as.numeric(residuals(melhor_suav))
+residuos_suav <- residuos_suav[is.finite(residuos_suav)]
+par(mfrow = c(1, 2))
+plot(residuos_suav, type = "l", xlab = "Mês no treino", ylab = "Resíduo",
+     main = "Suavização exponencial")
+acf(residuos_suav, main = "ACF dos resíduos")
+par(mfrow = c(1, 1))
+```
 
-## Suavizacao
-acc_ANN <- accuracy(prev_ANN, serie_teste)
-acc_AAN <- accuracy(prev_AAN, serie_teste)
-acc_AAA <- accuracy(prev_AAA, serie_teste)
+## Previsões dos modelos de suavização
 
-## ARIMA
-acc_auto <- accuracy(prev_auto, serie_teste)
-acc_auto_saz <- accuracy(prev_auto_saz, serie_teste)
+```{r}
+#| label: fig-previsoes-suavizacao
+#| fig-cap: "Previsões da suavização simples, Holt e Holt-Winters; a linha tracejada marca o início do teste"
+#| fig-width: 7
+#| fig-pos: H
+autoplot(window(serie, start = c(2016, 1)), series = "Observado") +
+  geom_vline(xintercept = time(teste)[1], linetype = "dashed", colour = "grey40") +
+  autolayer(prev_suav_candidatos[["Suavização simples"]]$mean,
+            series = "Suavização simples") +
+  autolayer(prev_suav_candidatos[["Holt"]]$mean,
+            series = "Holt") +
+  autolayer(prev_suav_candidatos[["Holt-Winters"]]$mean,
+            series = "Holt-Winters") +
+  labs(x = "Ano", y = "Número de casos", colour = "Série") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
 
+O gráfico permite comparar a previsão sazonal do Holt-Winters com as previsões da suavização simples e de Holt. A escolha do representante da família foi feita no treino; somente suas previsões entram na comparação final entre famílias.
+
+# ARIMA
+
+## Identificação
+
+### Testes de estacionariedade
+
+No treino, o OCSB indica a diferenciação sazonal e o KPSS indica a diferenciação regular. Conferimos a série original e a série diferenciada com os testes ADF e KPSS.
+
+```{r}
+#| label: identificacao-arima
+#| include: false
+D <- nsdiffs(treino, test = "ocsb")
+treino_sazonal <- if (D > 0) diff(treino, lag = 12, differences = D) else treino
+d <- ndiffs(treino_sazonal, test = "kpss")
+serie_dif <- treino
+if (D > 0) serie_dif <- diff(serie_dif, lag = 12, differences = D)
+if (d > 0) serie_dif <- diff(serie_dif, differences = d)
+limiar <- 1.96 / sqrt(length(serie_dif))
+acf_dif <- as.numeric(acf(serie_dif, lag.max = 24, plot = FALSE)$acf)
+pacf_dif <- as.numeric(pacf(serie_dif, lag.max = 24, plot = FALSE)$acf)
+p0 <- as.integer(abs(pacf_dif[1]) > limiar)
+q0 <- as.integer(abs(acf_dif[2]) > limiar)
+P0 <- as.integer(abs(pacf_dif[12]) > limiar)
+Q0 <- as.integer(abs(acf_dif[13]) > limiar)
+```
+
+```{r}
+#| label: testes-estacionariedade-arima
+adf_original <- tseries::adf.test(treino)
+kpss_original <- tseries::kpss.test(treino)
+adf_dif <- tseries::adf.test(serie_dif)
+kpss_dif <- tseries::kpss.test(serie_dif)
+cat(sprintf("Original: ADF p = %s; KPSS p = %s\n",
+            format.pval(adf_original$p.value), format.pval(kpss_original$p.value)))
+cat(sprintf("Após as diferenças: ADF p = %s; KPSS p = %s\n",
+            format.pval(adf_dif$p.value), format.pval(kpss_dif$p.value)))
+cat(sprintf("Diferenças indicadas: D = %d; d = %d\n", D, d))
+```
+
+
+
+### ACF
+
+```{r}
+#| label: fig-acf-arima
+#| fig-cap: "ACF da série de treino após as diferenças indicadas"
+#| fig-pos: H
+acf(serie_dif, main = "ACF após as diferenças")
+```
+
+
+
+### PACF
+
+```{r}
+#| label: fig-pacf-arima
+#| fig-cap: "PACF da série de treino após as diferenças indicadas"
+#| fig-pos: H
+pacf(serie_dif, main = "PACF após as diferenças")
+```
+
+
+
+## Estimação e diagnóstico
+
+
+
+```{r}
+#| label: ajuste-arima
+#| include: false
+candidatos <- unique(data.frame(
+  p = c(p0, 0L, 1L),
+  q = c(q0, 1L, 0L),
+  P = c(P0, 0L, 1L),
+  Q = c(Q0, 1L, 0L)
+))
+arimas <- list()
+tab_arima <- data.frame(
+  Rodada = integer(), Modelo = character(), AIC = numeric(),
+  p_Ljung_Box = numeric(), Adequado = logical()
+)
+revisoes <- data.frame(Rodada = integer(), Modelo_de_partida = character())
+rodada <- 1L
+
+repeat {
+  novos <- 0L
+  for (i in seq_len(nrow(candidatos))) {
+    s <- candidatos[i, ]
+    nome <- sprintf("ARIMA(%d,%d,%d)(%d,%d,%d)[12]",
+                    s$p, d, s$q, s$P, D, s$Q)
+    if (nome %in% names(arimas)) next
+    modelo <- tryCatch(
+      Arima(treino, order = c(s$p, d, s$q),
+            seasonal = list(order = c(s$P, D, s$Q), period = 12),
+            method = "ML"),
+      error = function(e) NULL
+    )
+    if (is.null(modelo)) next
+    residuos <- as.numeric(residuals(modelo))
+    residuos <- residuos[is.finite(residuos)]
+    p_lb <- Box.test(residuos, lag = 24,
+                     fitdf = s$p + s$q + s$P + s$Q,
+                     type = "Ljung-Box")$p.value
+    arimas[[nome]] <- modelo
+    tab_arima <- rbind(tab_arima, data.frame(
+      Rodada = rodada, Modelo = nome, AIC = AIC(modelo),
+      p_Ljung_Box = p_lb, Adequado = p_lb >= 0.05
+    ))
+    novos <- novos + 1L
+  }
+
+  if (novos == 0L) stop("Nenhum novo modelo ARIMA pôde ser estimado.")
+  if (any(tab_arima$Adequado) || rodada >= 3L) break
+
+  linhas_rodada <- which(tab_arima$Rodada == rodada)
+  referencia <- tab_arima$Modelo[linhas_rodada[which.min(tab_arima$AIC[linhas_rodada])]]
+  revisoes <- rbind(revisoes, data.frame(
+    Rodada = rodada + 1L, Modelo_de_partida = referencia
+  ))
+  ordem_ref <- arimaorder(arimas[[referencia]])
+  p <- ordem_ref[1]; q <- ordem_ref[3]
+  P <- ordem_ref[4]; Q <- ordem_ref[6]
+  candidatos <- unique(data.frame(
+    p = pmin(c(p + 1L, p, p, p, p + 1L), 3L),
+    q = pmin(c(q, q + 1L, q, q, q + 1L), 3L),
+    P = pmin(c(P, P, P + 1L, P, P), 2L),
+    Q = pmin(c(Q, Q, Q, Q + 1L, Q), 2L)
+  ))
+  rodada <- rodada + 1L
+}
+
+if (!any(tab_arima$Adequado)) {
+  stop("Nenhum ARIMA passou no diagnóstico; revise a identificação.")
+}
+elegiveis <- which(tab_arima$Adequado)
+escolhido <- elegiveis[which.min(tab_arima$AIC[elegiveis])]
+nome_arima <- tab_arima$Modelo[escolhido]
+melhor_arima <- arimas[[nome_arima]]
+prev_arima <- forecast(melhor_arima, h = n_teste)
+```
+
+
+
+```{r}
+#| label: tbl-arima
+#| tbl-cap: "Rodadas Box-Jenkins: AIC e diagnóstico dos candidatos no treino"
+resumo_arima <- data.frame(
+  Rodada = tab_arima$Rodada,
+  Modelo = tab_arima$Modelo,
+  AIC = tab_arima$AIC,
+  `p (Ljung-Box)` = tab_arima$p_Ljung_Box,
+  Diagnóstico = ifelse(tab_arima$Adequado, "Adequado", "Revisar"),
+  check.names = FALSE
+)
+knitr::kable(resumo_arima, digits = 3)
+```
+
+
+
+```{r}
+#| label: tbl-revisoes-arima
+#| tbl-cap: "Modelos de referência nas revisões da identificação ARIMA"
+if (nrow(revisoes) > 0) {
+  knitr::kable(revisoes, col.names = c("Nova rodada", "Modelo de partida"))
+}
+```
+
+```{r}
+#| label: fig-revisoes-arima
+#| fig-cap: "ACF e PACF dos resíduos dos modelos que motivaram nova identificação"
+#| fig-width: 7
+#| fig-height: 6
+#| fig-pos: H
+if (nrow(revisoes) > 0) {
+  op <- par(no.readonly = TRUE)
+  par(mfrow = c(nrow(revisoes), 2))
+  for (modelo_referencia in revisoes$Modelo_de_partida) {
+    e <- as.numeric(residuals(arimas[[modelo_referencia]]))
+    e <- e[is.finite(e)]
+    acf(e, main = paste("ACF:", modelo_referencia))
+    pacf(e, main = paste("PACF:", modelo_referencia))
+  }
+  par(op)
+}
+```
+
+
+```{r}
+#| label: tbl-arima-escolhido
+#| tbl-cap: "Modelo ARIMA selecionado após o diagnóstico"
+knitr::kable(data.frame(
+  Modelo = nome_arima,
+  Rodada = tab_arima$Rodada[escolhido],
+  AIC = tab_arima$AIC[escolhido],
+  `p (Ljung-Box)` = tab_arima$p_Ljung_Box[escolhido],
+  check.names = FALSE
+), digits = 3)
+```
+
+```{r}
+#| label: fig-residuos-arima
+#| fig-cap: "Diagnóstico dos resíduos do modelo ARIMA selecionado: evolução, ACF, PACF e normalidade"
+#| fig-width: 7
+#| fig-height: 6
+#| fig-pos: H
+residuos_arima <- as.numeric(residuals(melhor_arima))
+residuos_arima <- residuos_arima[is.finite(residuos_arima)]
+op <- par(no.readonly = TRUE)
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+plot(residuos_arima, type = "l", xlab = "Mês no treino", ylab = "Resíduo",
+     main = "Resíduos ao longo do tempo")
+acf(residuos_arima, main = "ACF dos resíduos")
+pacf(residuos_arima, main = "PACF dos resíduos")
+qqnorm(residuos_arima, main = "Normalidade (Q-Q)",
+       xlab = "Quantis teóricos", ylab = "Quantis dos resíduos")
+qqline(residuos_arima, col = "red")
+par(op)
+```
+
+A ACF e a PACF mostram possíveis dependências restantes; no gráfico Q-Q, desvios da reta indicam afastamento da normalidade.
+
+# Comparação final
+
+
+
+```{r}
+#| label: calculos-comparacao
+#| include: false
+erros <- cbind(
+  "Regressão" = as.numeric(teste) - as.numeric(prev_reg$mean),
+  "Suavização exponencial" = as.numeric(teste) - as.numeric(prev_suav$mean),
+  "ARIMA" = as.numeric(teste) - as.numeric(prev_arima$mean)
+)
+mae <- colMeans(abs(erros))
 comparacao <- data.frame(
-  Modelo = c(
-    "Regressao com tendencia",
-    "Regressao com tendencia + sazonalidade",
-    "Regressao com tendencia quadratica + sazonalidade",
-    "Suavizacao simples",
-    "Holt",
-    "Holt-Winters",
-    "ARIMA(0,1,1)",
-    "ARIMA(0,1,1)(0,1,1)[12]"
-  ),
-  RMSE_treino = c(
-    acc_tendencia[1, "RMSE"],
-    acc_sazonal[1, "RMSE"],
-    acc_quadratico[1, "RMSE"],
-    acc_ANN[1, "RMSE"],
-    acc_AAN[1, "RMSE"],
-    acc_AAA[1, "RMSE"],
-    acc_auto[1, "RMSE"],
-    acc_auto_saz[1, "RMSE"]
-  ),
-  RMSE = c(
-    acc_tendencia[2, "RMSE"],
-    acc_sazonal[2, "RMSE"],
-    acc_quadratico[2, "RMSE"],
-    acc_ANN[2, "RMSE"],
-    acc_AAN[2, "RMSE"],
-    acc_AAA[2, "RMSE"],
-    acc_auto[2, "RMSE"],
-    acc_auto_saz[2, "RMSE"]
-  ),
-  MAE = c(
-    acc_tendencia[2, "MAE"],
-    acc_sazonal[2, "MAE"],
-    acc_quadratico[2, "MAE"],
-    acc_ANN[2, "MAE"],
-    acc_AAN[2, "MAE"],
-    acc_AAA[2, "MAE"],
-    acc_auto[2, "MAE"],
-    acc_auto_saz[2, "MAE"]
-  ),
-  MAPE = c(
-    acc_tendencia[2, "MAPE"],
-    acc_sazonal[2, "MAPE"],
-    acc_quadratico[2, "MAPE"],
-    acc_ANN[2, "MAPE"],
-    acc_AAN[2, "MAPE"],
-    acc_AAA[2, "MAPE"],
-    acc_auto[2, "MAPE"],
-    acc_auto_saz[2, "MAPE"]
-  )
+  Familia = colnames(erros),
+  MAE = as.numeric(mae),
+  RMSE = as.numeric(sqrt(colMeans(erros^2))),
+  MASE = as.numeric(mae / mean(abs(diff(as.numeric(treino), lag = 12))))
 )
-
-knitr::kable(comparacao, digits = 2)
+vencedor <- comparacao$Familia[which.min(comparacao$RMSE)]
 ```
 
-A coluna RMSE_treino mede o ajuste no treino e as colunas RMSE, MAE e MAPE medem o erro de previsão no teste. No treino, os modelos com sazonalidade têm RMSE entre 38,1 e 41,4, contra 58,7 a 61,1 dos modelos sem sazonalidade. Os melhores de cada grupo ficam próximos no teste: regressão com tendência quadrática e sazonalidade (MAPE de 2,61%), ARIMA(0,1,1)(0,1,1)[12] (2,82%) e Holt-Winters (2,84%). Os modelos sem sazonalidade têm erros bem maiores, o que mostra a importância do componente sazonal nessa série.
-
-melhor modelo de cada grupo
 ```{r}
-autoplot(window(serie_treino, start = c(2016, 1)), series = "Treino") +
-  autolayer(serie_teste, series = "Teste") +
-  autolayer(prev_quadratico$mean, series = "Regressao quadratica + sazonalidade") +
-  autolayer(prev_AAA$mean, series = "Holt-Winters") +
-  autolayer(prev_auto_saz$mean, series = "ARIMA(0,1,1)(0,1,1)[12]") +
-  guides(colour = guide_legend(nrow = 2)) +
-  labs(
-    x = "Tempo",
-    y = "Núm de casos",
-    colour = ""
-  ) +
+#| label: tbl-comparacao
+#| tbl-cap: "Desempenho dos três representantes no teste"
+knitr::kable(comparacao, digits = 2, col.names = c("Família", "MAE", "RMSE", "MASE"))
+```
+
+```{r}
+#| label: fig-comparacao
+#| fig-cap: "Valores observados e previsões dos três modelos; a linha tracejada marca o início do teste"
+#| fig-width: 7
+autoplot(window(serie, start = c(2016, 1)), series = "Observado") +
+  geom_vline(xintercept = time(teste)[1], linetype = "dashed", colour = "grey40") +
+  autolayer(prev_reg$mean, series = "Regressão") +
+  autolayer(prev_suav$mean, series = "Suavização exponencial") +
+  autolayer(prev_arima$mean, series = "ARIMA") +
+  labs(x = "Ano", y = "Número de casos", colour = "Série") +
   theme_minimal() +
   theme(legend.position = "bottom")
 ```
 
-O modelo final escolhido é a regressão com tendência quadrática e sazonalidade: tem os menores erros no teste em todas as medidas, resíduos sem autocorrelação e coeficientes fáceis de interpretar. O ARIMA(0,1,1)(0,1,1)[12] fica bem próximo e é uma alternativa para horizontes mais longos, porque não depende de uma tendência quadrática.
 
-## Limitações e possíveis melhorias
+```{r}
+#| label: tbl-modelo-final
+#| tbl-cap: "Família selecionada pelo menor RMSE no teste"
+knitr::kable(comparacao[comparacao$Familia == vencedor, ],
+             digits = 2, row.names = FALSE,
+             col.names = c("Família", "MAE", "RMSE", "MASE"))
+```
 
-- A tendência quadrática funciona bem no horizonte de 18 meses, mas cresce cada vez mais rápido e pode superestimar previsões de longo prazo.
-- No Holt-Winters o beta e o gamma ficaram perto de zero e no ARIMA sazonal o coeficiente sma1 ficou perto de -1. Os dois resultados indicam que a sazonalidade é praticamente fixa, o que explica o bom desempenho da regressão com variáveis indicadoras de mês.
-- Os resíduos do ARIMA não seguem distribuição normal, então os intervalos de previsão devem ser vistos com cuidado. Uma transformação logarítmica ou de Box-Cox poderia ajudar.
-- A avaliação usa um único corte entre treino e teste. Uma validação cruzada com origem móvel (função `tsCV`) daria uma medida de erro mais estável.
-- Parte da variação entre os meses vem do número de dias (fevereiro sempre mais baixo). Usar a média diária ou incluir os dias do mês como variável poderia melhorar os modelos.
-- Outras opções de suavização, como o Holt-Winters amortecido ou multiplicativo, poderiam ser testadas.
-- Os dados terminam em 2019. Prever a partir de 2020 exigiria considerar os efeitos da pandemia.
+# Conclusão
 
-## Conclusão
-
-A série tem tendência crescente e sazonalidade anual bem definida. Os modelos que incluem a sazonalidade foram muito melhores que os demais, e os melhores de cada grupo tiveram desempenho parecido no teste, com MAPE entre 2,6% e 2,9%. O modelo final escolhido foi a regressão com tendência quadrática e sazonalidade.
